@@ -21,6 +21,24 @@ cd ~/dexi-mavsdk
 python3 takeoff_and_land.py
 ```
 
+### takeoff_fly_forward_land.py
+
+Takeoff, fly forward 2m using offboard mode, and land:
+
+```bash
+cd ~/dexi-mavsdk
+python3 takeoff_fly_forward_land.py
+```
+
+### box_mission.py
+
+Takeoff and fly a 1m box pattern (forward, right, back, left):
+
+```bash
+cd ~/dexi-mavsdk
+python3 box_mission.py
+```
+
 ## Network Configuration
 
 - PX4 SITL runs in `px4-sitl` container at `172.20.0.4`

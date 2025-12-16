@@ -1,31 +1,30 @@
 #!/usr/bin/env python3
 """
-MAVSDK example: Takeoff and land.
+MAVSDK example: Takeoff, fly forward 2m, and land.
 
 Works with PX4 SITL simulation and DEXI drone.
 
-This script performs:
+This script uses offboard mode to:
 1. Wait for connection
 2. Arm the drone
 3. Takeoff to 2.5 meters
-4. Hover for 5 seconds
+4. Fly forward 2 meters
 5. Land
 
 Usage:
-    python3 takeoff_and_land.py
+    python3 takeoff_fly_forward_land.py
 
 The script listens on UDP port 14540 for MAVLink.
 """
 
 import asyncio
 from mavsdk import System
+from mavsdk.offboard import OffboardError, PositionNedYaw
 
 
 async def run():
-    # Connect to PX4 SITL (px4-sitl container IP)
     drone = System()
 
-    # Listen on UDP port 14540 for MAVLink
     print("Connecting to drone (listening on port 14540)...")
     await drone.connect(system_address="udpin://0.0.0.0:14540")
 
@@ -60,9 +59,47 @@ async def run():
             print(f"Reached altitude: {position.relative_altitude_m:.1f}m")
             break
 
-    # Hover for 5 seconds
-    print("Hovering for 5 seconds...")
+    # Get current position for reference
+    print("Getting current position...")
+    async for position in drone.telemetry.position_velocity_ned():
+        start_north = position.position.north_m
+        start_east = position.position.east_m
+        start_down = position.position.down_m
+        print(f"Current position: N={start_north:.1f}m, E={start_east:.1f}m, D={start_down:.1f}m")
+        break
+
+    # Set initial setpoint (current position) before starting offboard mode
+    print("Setting initial offboard setpoint...")
+    await drone.offboard.set_position_ned(PositionNedYaw(
+        start_north, start_east, start_down, 0.0
+    ))
+
+    # Start offboard mode
+    print("Starting offboard mode...")
+    try:
+        await drone.offboard.start()
+    except OffboardError as error:
+        print(f"Offboard start failed: {error._result.result}")
+        print("Landing...")
+        await drone.action.land()
+        return
+
+    # Fly forward 2 meters (positive North in NED frame)
+    target_north = start_north + 2.0
+    print(f"Flying forward 2m to N={target_north:.1f}m...")
+    await drone.offboard.set_position_ned(PositionNedYaw(
+        target_north, start_east, start_down, 0.0
+    ))
+
+    # Wait to reach target
     await asyncio.sleep(5)
+
+    # Stop offboard mode
+    print("Stopping offboard mode...")
+    try:
+        await drone.offboard.stop()
+    except OffboardError as error:
+        print(f"Offboard stop failed: {error._result.result}")
 
     # Land
     print("Landing...")
@@ -75,7 +112,7 @@ async def run():
             print("Landed!")
             break
 
-    # Disarm (optional, PX4 auto-disarms after landing)
+    # Disarm
     print("Disarming...")
     await drone.action.disarm()
     print("Done!")
