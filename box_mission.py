@@ -18,8 +18,17 @@ The script listens on UDP port 14540 for MAVLink.
 """
 
 import asyncio
+import math
 from mavsdk import System
 from mavsdk.offboard import OffboardError, PositionNedYaw
+
+
+def body_to_ned(forward, right, yaw_deg):
+    """Convert body-frame offsets to NED offsets based on yaw heading."""
+    yaw_rad = math.radians(yaw_deg)
+    north = forward * math.cos(yaw_rad) - right * math.sin(yaw_rad)
+    east = forward * math.sin(yaw_rad) + right * math.cos(yaw_rad)
+    return north, east
 
 
 async def fly_to_position(drone, north, east, down, yaw, description):
@@ -75,10 +84,17 @@ async def run():
         print(f"Start position: N={start_north:.1f}m, E={start_east:.1f}m, D={start_down:.1f}m")
         break
 
+    # Get current yaw to maintain heading
+    print("Getting current heading...")
+    async for attitude in drone.telemetry.attitude_euler():
+        start_yaw = attitude.yaw_deg
+        print(f"Current yaw: {start_yaw:.1f}°")
+        break
+
     # Set initial setpoint (current position) before starting offboard mode
     print("Setting initial offboard setpoint...")
     await drone.offboard.set_position_ned(PositionNedYaw(
-        start_north, start_east, start_down, 0.0
+        start_north, start_east, start_down, start_yaw
     ))
 
     # Start offboard mode
@@ -91,27 +107,39 @@ async def run():
         await drone.action.land()
         return
 
-    # Fly box pattern (1m sides)
-    # NED frame: North = forward, East = right, Down = down
+    # Fly box pattern (1m sides) in body frame
+    # Forward/back and left/right are relative to drone's heading
 
-    # 1. Fly forward 1m (positive North)
+    # 1. Fly forward 1m (body frame)
+    d_north, d_east = body_to_ned(1.0, 0.0, start_yaw)
+    pos1_north = start_north + d_north
+    pos1_east = start_east + d_east
     await fly_to_position(drone,
-        start_north + 1.0, start_east, start_down, 0.0,
+        pos1_north, pos1_east, start_down, start_yaw,
         "Flying forward 1m")
 
-    # 2. Fly right 1m (positive East)
+    # 2. Fly right 1m (body frame)
+    d_north, d_east = body_to_ned(0.0, 1.0, start_yaw)
+    pos2_north = pos1_north + d_north
+    pos2_east = pos1_east + d_east
     await fly_to_position(drone,
-        start_north + 1.0, start_east + 1.0, start_down, 0.0,
+        pos2_north, pos2_east, start_down, start_yaw,
         "Flying right 1m")
 
-    # 3. Fly back 1m (back to start North)
+    # 3. Fly back 1m (body frame)
+    d_north, d_east = body_to_ned(-1.0, 0.0, start_yaw)
+    pos3_north = pos2_north + d_north
+    pos3_east = pos2_east + d_east
     await fly_to_position(drone,
-        start_north, start_east + 1.0, start_down, 0.0,
+        pos3_north, pos3_east, start_down, start_yaw,
         "Flying back 1m")
 
-    # 4. Fly left 1m (back to start East)
+    # 4. Fly left 1m (body frame) - back to start
+    d_north, d_east = body_to_ned(0.0, -1.0, start_yaw)
+    pos4_north = pos3_north + d_north
+    pos4_east = pos3_east + d_east
     await fly_to_position(drone,
-        start_north, start_east, start_down, 0.0,
+        pos4_north, pos4_east, start_down, start_yaw,
         "Flying left 1m (back to start)")
 
     print("Box pattern complete!")

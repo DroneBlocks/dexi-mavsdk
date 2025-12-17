@@ -18,6 +18,7 @@ The script listens on UDP port 14540 for MAVLink.
 """
 
 import asyncio
+import math
 from mavsdk import System
 from mavsdk.offboard import OffboardError, PositionNedYaw
 
@@ -68,10 +69,17 @@ async def run():
         print(f"Current position: N={start_north:.1f}m, E={start_east:.1f}m, D={start_down:.1f}m")
         break
 
+    # Get current yaw to maintain heading
+    print("Getting current heading...")
+    async for attitude in drone.telemetry.attitude_euler():
+        start_yaw = attitude.yaw_deg
+        print(f"Current yaw: {start_yaw:.1f}°")
+        break
+
     # Set initial setpoint (current position) before starting offboard mode
     print("Setting initial offboard setpoint...")
     await drone.offboard.set_position_ned(PositionNedYaw(
-        start_north, start_east, start_down, 0.0
+        start_north, start_east, start_down, start_yaw
     ))
 
     # Start offboard mode
@@ -84,11 +92,14 @@ async def run():
         await drone.action.land()
         return
 
-    # Fly forward 2 meters (positive North in NED frame)
-    target_north = start_north + 2.0
-    print(f"Flying forward 2m to N={target_north:.1f}m...")
+    # Fly forward 2 meters relative to drone's heading
+    distance = 2.0
+    yaw_rad = math.radians(start_yaw)
+    target_north = start_north + distance * math.cos(yaw_rad)
+    target_east = start_east + distance * math.sin(yaw_rad)
+    print(f"Flying forward {distance}m (body frame) to N={target_north:.1f}m, E={target_east:.1f}m...")
     await drone.offboard.set_position_ned(PositionNedYaw(
-        target_north, start_east, start_down, 0.0
+        target_north, target_east, start_down, start_yaw
     ))
 
     # Wait to reach target
