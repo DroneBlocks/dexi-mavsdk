@@ -4,39 +4,62 @@ Simple MAVSDK examples for controlling DEXI drone via MAVLink.
 
 ## Setup
 
-From the code-server container terminal:
-
 ```bash
 pip3 install --break-system-packages mavsdk
 ```
 
-## Examples
+## Directory Structure
 
-### takeoff_and_land.py
-
-Basic takeoff to 2.5m and land:
-
-```bash
-cd ~/dexi-mavsdk
-python3 takeoff_and_land.py
+```
+dexi-mavsdk/
+├── missions/      # Autonomous flight scripts
+├── control/       # Manual/interactive control
+└── config/        # Parameter configuration
 ```
 
-### takeoff_fly_forward_land.py
+## Missions
 
-Takeoff, fly forward 2m using offboard mode, and land:
+Autonomous flight scripts that takeoff, execute a task, and land.
 
 ```bash
-cd ~/dexi-mavsdk
-python3 takeoff_fly_forward_land.py
+# Basic takeoff to 2.5m and land
+python3 missions/takeoff_and_land.py
+
+# Velocity-based takeoff/land (bypasses position hold issues)
+python3 missions/velocity_takeoff_land.py
+
+# Takeoff, fly forward 2m, and land
+python3 missions/takeoff_fly_forward_land.py
+
+# Fly a 1m box pattern
+python3 missions/box_mission.py
 ```
 
-### box_mission.py
+## Control
 
-Takeoff and fly a 1m box pattern (forward, right, back, left):
+Interactive and manual control scripts.
 
 ```bash
-cd ~/dexi-mavsdk
-python3 box_mission.py
+# Keyboard control (WASD-style)
+python3 control/keyboard_control.py
+
+# Simple movement test
+python3 control/move_left.py
+```
+
+## Config
+
+Parameter configuration scripts.
+
+```bash
+# Configure EKF2 for vision-based navigation
+python3 config/configure_vision_ekf.py
+
+# Disable GPS (vision-only mode)
+python3 config/disable_gps.py
+
+# Re-enable GPS
+python3 config/enable_gps.py
 ```
 
 ## Network Configuration
