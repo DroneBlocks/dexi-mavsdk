@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
 """
-Velocity-based takeoff, hover, and land.
+Hybrid takeoff using action.takeoff(), then offboard velocity for hover/control.
 
-Uses offboard velocity commands instead of action.takeoff() to avoid
-position hold issues with EKF2_HGT_REF settings.
-
-1. Arm
-2. Climb using upward velocity command
-3. Hover for 5 seconds (zero velocity)
-4. Descend using downward velocity command
-5. Disarm
+This uses PX4's internal takeoff (which works with current EKF settings),
+then switches to offboard velocity control once airborne.
 
 Usage:
     python3 velocity_takeoff_land.py
@@ -21,17 +15,16 @@ from mavsdk.offboard import OffboardError, VelocityBodyYawspeed
 
 
 # Flight parameters
-CLIMB_VELOCITY = 0.5      # m/s upward
-DESCEND_VELOCITY = 0.3    # m/s downward
-TARGET_ALTITUDE = 2.5     # meters
+TAKEOFF_ALT = 1.5         # meters
 HOVER_TIME = 5.0          # seconds
+SETPOINT_INTERVAL = 0.02  # 50 Hz
 
 
 async def run():
     drone = System()
 
     print("Connecting to drone...")
-    await drone.connect(system_address="udp://:14540")
+    await drone.connect(system_address="udpin://0.0.0.0:14540")
 
     async for state in drone.core.connection_state():
         if state.is_connected:
@@ -50,61 +43,47 @@ async def run():
     await drone.action.arm()
     print("Armed!")
 
-    # Set initial setpoint before starting offboard mode
-    print("Setting initial setpoint...")
-    await drone.offboard.set_velocity_body(VelocityBodyYawspeed(0, 0, 0, 0))
+    # Use action.takeoff() - this uses PX4's internal control
+    print(f"Taking off to {TAKEOFF_ALT}m using action.takeoff()...")
+    await drone.action.set_takeoff_altitude(TAKEOFF_ALT)
+    await drone.action.takeoff()
 
-    # Start offboard mode
-    print("Starting offboard mode...")
+    # Wait for takeoff to complete
+    print("Waiting to reach altitude...")
+    await asyncio.sleep(5)  # Give it time to climb
+
+    # Check altitude
+    async for position in drone.telemetry.position():
+        print(f"Current altitude: {position.relative_altitude_m:.2f}m")
+        break
+
+    # Now try offboard for hover control
+    print("\nSwitching to offboard mode for hover...")
+
+    # Prime with setpoints
+    print("Priming setpoints...")
+    for i in range(50):
+        await drone.offboard.set_velocity_body(VelocityBodyYawspeed(0, 0, 0, 0))
+        await asyncio.sleep(SETPOINT_INTERVAL)
+
     try:
         await drone.offboard.start()
         print("Offboard mode started!")
-    except OffboardError as e:
-        print(f"Failed to start offboard mode: {e}")
-        await drone.action.disarm()
-        return
 
-    # Climb using velocity command (negative Z = up in NED)
-    print(f"Climbing to ~{TARGET_ALTITUDE}m...")
-    await drone.offboard.set_velocity_body(
-        VelocityBodyYawspeed(0, 0, -CLIMB_VELOCITY, 0)
-    )
+        # Hover with continuous setpoints
+        print(f"Hovering for {HOVER_TIME} seconds...")
+        end_time = asyncio.get_event_loop().time() + HOVER_TIME
+        while asyncio.get_event_loop().time() < end_time:
+            await drone.offboard.set_velocity_body(VelocityBodyYawspeed(0, 0, 0, 0))
+            await asyncio.sleep(SETPOINT_INTERVAL)
 
-    # Monitor altitude and stop climbing when target reached
-    async for position in drone.telemetry.position():
-        alt = position.relative_altitude_m
-        print(f"  Altitude: {alt:.2f}m", end="\r")
-        if alt >= TARGET_ALTITUDE:
-            print(f"\nReached target altitude: {alt:.2f}m")
-            break
-
-    # Hover (zero velocity)
-    print(f"Hovering for {HOVER_TIME} seconds...")
-    await drone.offboard.set_velocity_body(VelocityBodyYawspeed(0, 0, 0, 0))
-    await asyncio.sleep(HOVER_TIME)
-
-    # Descend using velocity command (positive Z = down in NED)
-    print("Descending...")
-    await drone.offboard.set_velocity_body(
-        VelocityBodyYawspeed(0, 0, DESCEND_VELOCITY, 0)
-    )
-
-    # Monitor altitude until near ground
-    async for position in drone.telemetry.position():
-        alt = position.relative_altitude_m
-        print(f"  Altitude: {alt:.2f}m", end="\r")
-        if alt <= 0.3:
-            print(f"\nNear ground: {alt:.2f}m")
-            break
-
-    # Stop offboard and land
-    print("Stopping offboard mode...")
-    try:
+        print("Stopping offboard...")
         await drone.offboard.stop()
-    except OffboardError as e:
-        print(f"Failed to stop offboard: {e}")
 
-    # Use land action for final touchdown
+    except OffboardError as e:
+        print(f"Offboard failed: {e}")
+
+    # Land using action.land()
     print("Landing...")
     await drone.action.land()
 
@@ -114,9 +93,6 @@ async def run():
             print("Landed!")
             break
 
-    # Disarm
-    print("Disarming...")
-    await drone.action.disarm()
     print("Done!")
 
 
