@@ -49,17 +49,35 @@ python3 control/move_left.py
 
 ## Config
 
-Parameter configuration scripts.
+Parameter configuration scripts for EKF2 sensor fusion modes.
+
+### GPS Mode (Default)
+
+Standard mode using GPS for position. Use this for outdoor flight or to reset after testing vision mode.
 
 ```bash
-# Configure EKF2 for vision-based navigation
-python3 config/configure_vision_ekf.py
-
-# Disable GPS (vision-only mode)
-python3 config/disable_gps.py
-
-# Re-enable GPS
 python3 config/enable_gps.py
+```
+
+Sets: `EKF2_GPS_CTRL=7`, `EKF2_EV_CTRL=0`, `EKF2_HGT_REF=1` (GPS height)
+
+### Vision Mode (No GPS)
+
+Disables GPS and enables visual odometry fusion. Use with `apriltag_odometry` for indoor flight or GPS-denied environments.
+
+```bash
+python3 config/disable_gps.py
+```
+
+Sets: `EKF2_GPS_CTRL=0`, `EKF2_EV_CTRL=1` (horizontal position only), `EKF2_HGT_REF=0` (barometer)
+
+**Warning:** In vision mode, the drone will drift if it loses sight of the AprilTag.
+
+### Debug
+
+```bash
+# Monitor visual odometry messages being received by PX4
+python3 config/debug_vision_odom.py
 ```
 
 ## Network Configuration
