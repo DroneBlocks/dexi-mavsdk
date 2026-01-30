@@ -46,8 +46,29 @@ class DroneController:
                 return
 
     async def takeoff(self):
+        # PX4 SITL requires offboard setpoints BEFORE arming (no RC controller)
+        print("Sending initial offboard setpoint (required for SITL arming)...")
+        await self.drone.offboard.set_velocity_body(
+            VelocityBodyYawspeed(0, 0, 0, 0)
+        )
+
+        print("Starting offboard signal...")
+        try:
+            await self.drone.offboard.start()
+        except OffboardError as e:
+            print(f"Offboard start failed (expected on ground): {e}")
+
+        # Give PX4 time to recognize the offboard signal
+        await asyncio.sleep(1.5)
+
         print("Arming...")
         await self.drone.action.arm()
+
+        # Stop offboard to use action.takeoff()
+        try:
+            await self.drone.offboard.stop()
+        except OffboardError:
+            pass
 
         print(f"Taking off to {TAKEOFF_ALT}m...")
         await self.drone.action.set_takeoff_altitude(TAKEOFF_ALT)

@@ -31,17 +31,31 @@ async def run():
             print("Connected!")
             break
 
-    # Wait for drone to be ready
-    print("Waiting for drone to be ready...")
-    async for health in drone.telemetry.health():
-        if health.is_armable:
-            print("Drone is ready!")
-            break
+    # PX4 SITL requires offboard setpoints BEFORE arming (no RC controller)
+    # Send initial setpoint to establish offboard control signal
+    print("Sending initial offboard setpoint (required for SITL arming)...")
+    await drone.offboard.set_velocity_body(VelocityBodyYawspeed(0, 0, 0, 0))
 
-    # Arm
+    # Start offboard mode to send heartbeat - this allows arming in SITL
+    print("Starting offboard mode...")
+    try:
+        await drone.offboard.start()
+    except OffboardError as error:
+        print(f"Offboard start failed (expected on ground): {error._result.result}")
+
+    # Give PX4 time to recognize the offboard signal
+    await asyncio.sleep(1.5)
+
+    # Now arm the drone (offboard signal allows arming without RC)
     print("Arming...")
     await drone.action.arm()
     print("Armed!")
+
+    # Stop offboard so we can use action.takeoff()
+    try:
+        await drone.offboard.stop()
+    except OffboardError:
+        pass
 
     # Use action.takeoff() - this uses PX4's internal control
     print(f"Taking off to {TAKEOFF_ALT}m using action.takeoff()...")

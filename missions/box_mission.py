@@ -51,22 +51,51 @@ async def run():
             print("Drone connected!")
             break
 
-    # Wait for drone to be ready to arm
-    print("Waiting for drone to be ready to arm...")
-    async for health in drone.telemetry.health():
-        if health.is_armable:
-            print("Drone is ready to arm!")
-            break
+    # Get initial position for offboard setpoint
+    print("Getting initial position...")
+    async for position in drone.telemetry.position_velocity_ned():
+        initial_north = position.position.north_m
+        initial_east = position.position.east_m
+        initial_down = position.position.down_m
+        break
 
-    # Arm the drone
+    # Get initial heading
+    async for attitude in drone.telemetry.attitude_euler():
+        initial_yaw = attitude.yaw_deg
+        break
+
+    print(f"Initial position: N={initial_north:.1f}, E={initial_east:.1f}, D={initial_down:.1f}, Yaw={initial_yaw:.1f}°")
+
+    # PX4 SITL requires offboard setpoints BEFORE arming (no RC controller)
+    # Send initial setpoint to establish offboard control signal
+    print("Sending initial offboard setpoint (required for SITL arming)...")
+    await drone.offboard.set_position_ned(PositionNedYaw(
+        initial_north, initial_east, initial_down, initial_yaw
+    ))
+
+    # Start offboard mode to send heartbeat - this allows arming in SITL
+    print("Starting offboard mode...")
+    try:
+        await drone.offboard.start()
+    except OffboardError as error:
+        print(f"Offboard start failed (expected on ground): {error._result.result}")
+        # Continue anyway - the setpoints are still being sent
+
+    # Give PX4 time to recognize the offboard signal
+    await asyncio.sleep(1.5)
+
+    # Now arm the drone (offboard signal allows arming without RC)
     print("Arming...")
     await drone.action.arm()
     print("Armed!")
 
-    # Takeoff
-    print("Taking off to 2.5m...")
-    await drone.action.set_takeoff_altitude(2.5)
-    await drone.action.takeoff()
+    # Takeoff using offboard position control (we're already in offboard mode)
+    target_altitude = 2.5
+    target_down = initial_down - target_altitude  # NED: negative is up
+    print(f"Taking off to {target_altitude}m using offboard mode...")
+    await drone.offboard.set_position_ned(PositionNedYaw(
+        initial_north, initial_east, target_down, initial_yaw
+    ))
 
     # Wait for takeoff to complete (check altitude)
     print("Waiting to reach altitude...")
@@ -75,7 +104,7 @@ async def run():
             print(f"Reached altitude: {position.relative_altitude_m:.1f}m")
             break
 
-    # Get current position for reference
+    # Get current position for box pattern reference
     print("Getting current position...")
     async for position in drone.telemetry.position_velocity_ned():
         start_north = position.position.north_m
@@ -85,27 +114,10 @@ async def run():
         break
 
     # Get current yaw to maintain heading
-    print("Getting current heading...")
     async for attitude in drone.telemetry.attitude_euler():
         start_yaw = attitude.yaw_deg
         print(f"Current yaw: {start_yaw:.1f}°")
         break
-
-    # Set initial setpoint (current position) before starting offboard mode
-    print("Setting initial offboard setpoint...")
-    await drone.offboard.set_position_ned(PositionNedYaw(
-        start_north, start_east, start_down, start_yaw
-    ))
-
-    # Start offboard mode
-    print("Starting offboard mode...")
-    try:
-        await drone.offboard.start()
-    except OffboardError as error:
-        print(f"Offboard start failed: {error._result.result}")
-        print("Landing...")
-        await drone.action.land()
-        return
 
     # Fly box pattern (1m sides) in body frame
     # Forward/back and left/right are relative to drone's heading

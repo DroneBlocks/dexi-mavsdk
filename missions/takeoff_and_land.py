@@ -19,6 +19,7 @@ The script listens on UDP port 14540 for MAVLink.
 
 import asyncio
 from mavsdk import System
+from mavsdk.offboard import OffboardError, VelocityBodyYawspeed
 
 
 async def run():
@@ -36,17 +37,31 @@ async def run():
             print("Drone connected!")
             break
 
-    # Wait for drone to be ready to arm
-    print("Waiting for drone to be ready to arm...")
-    async for health in drone.telemetry.health():
-        if health.is_armable:
-            print("Drone is ready to arm!")
-            break
+    # PX4 SITL requires offboard setpoints BEFORE arming (no RC controller)
+    # Send initial setpoint to establish offboard control signal
+    print("Sending initial offboard setpoint (required for SITL arming)...")
+    await drone.offboard.set_velocity_body(VelocityBodyYawspeed(0, 0, 0, 0))
 
-    # Arm the drone
+    # Start offboard mode to send heartbeat - this allows arming in SITL
+    print("Starting offboard mode...")
+    try:
+        await drone.offboard.start()
+    except OffboardError as error:
+        print(f"Offboard start failed (expected on ground): {error._result.result}")
+
+    # Give PX4 time to recognize the offboard signal
+    await asyncio.sleep(1.5)
+
+    # Now arm the drone (offboard signal allows arming without RC)
     print("Arming...")
     await drone.action.arm()
     print("Armed!")
+
+    # Stop offboard so we can use action.takeoff()
+    try:
+        await drone.offboard.stop()
+    except OffboardError:
+        pass
 
     # Takeoff
     print("Taking off to 2.5m...")
