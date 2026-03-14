@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Simple keyboard control for drone using MAVSDK offboard velocity control.
+Keyboard control for drone using MAVSDK offboard position commands.
+
+Each keypress moves the drone a fixed distance in the given direction,
+relative to the drone's current heading.
 
 Controls (type letter and press Enter):
     i/k - Forward/Back
     j/l - Left/Right
     w/s - Up/Down
     a/d - Yaw left/right
-    x   - Stop
     t   - Takeoff
     n   - Land
     q   - Quit
@@ -17,17 +19,16 @@ Usage:
 """
 
 import asyncio
-import sys
+import math
 from mavsdk import System
-from mavsdk.offboard import OffboardError, VelocityBodyYawspeed
-
+from mavsdk.offboard import OffboardError, PositionNedYaw
 
 # Control settings
-VELOCITY_XY = 1.0       # m/s forward/backward/left/right
-VELOCITY_Z = 0.5        # m/s up/down
-YAWSPEED = 30.0         # deg/s yaw rate
+MOVE_DISTANCE = 1.0     # meters per keypress
+ALTITUDE_STEP = 0.5     # meters per keypress
+YAW_STEP = 30.0         # degrees per keypress
 TAKEOFF_ALT = 2.5       # meters
-MOVE_DURATION = 0.5     # seconds to move per keypress
+SETTLE_TIME = 0.5       # seconds to wait after sending position
 
 
 class DroneController:
@@ -35,21 +36,37 @@ class DroneController:
         self.drone = System()
         self.in_offboard = False
         self.running = True
+        # Current position/heading tracking
+        self.north = 0.0
+        self.east = 0.0
+        self.down = 0.0
+        self.yaw = 0.0
 
     async def connect(self):
         print("Connecting to drone...")
-        await self.drone.connect(system_address="udp://:14540")
+        await self.drone.connect(system_address="udpin://0.0.0.0:14540")
 
         async for state in self.drone.core.connection_state():
             if state.is_connected:
                 print("Connected!")
                 return
 
+    async def update_position(self):
+        """Read current position and heading from telemetry."""
+        async for pos in self.drone.telemetry.position_velocity_ned():
+            self.north = pos.position.north_m
+            self.east = pos.position.east_m
+            self.down = pos.position.down_m
+            break
+        async for att in self.drone.telemetry.attitude_euler():
+            self.yaw = att.yaw_deg
+            break
+
     async def takeoff(self):
-        # PX4 SITL requires offboard setpoints BEFORE arming (no RC controller)
-        print("Sending initial offboard setpoint (required for SITL arming)...")
-        await self.drone.offboard.set_velocity_body(
-            VelocityBodyYawspeed(0, 0, 0, 0)
+        # Send initial setpoint before arming (required for SITL)
+        print("Sending initial offboard setpoint...")
+        await self.drone.offboard.set_position_ned(
+            PositionNedYaw(0, 0, 0, 0)
         )
 
         print("Starting offboard signal...")
@@ -58,11 +75,11 @@ class DroneController:
         except OffboardError as e:
             print(f"Offboard start failed (expected on ground): {e}")
 
-        # Give PX4 time to recognize the offboard signal
         await asyncio.sleep(1.5)
 
         print("Arming...")
         await self.drone.action.arm()
+        print("Armed!")
 
         # Stop offboard to use action.takeoff()
         try:
@@ -74,20 +91,27 @@ class DroneController:
         await self.drone.action.set_takeoff_altitude(TAKEOFF_ALT)
         await self.drone.action.takeoff()
 
-        await asyncio.sleep(5)
-        print("Starting offboard mode...")
+        # Wait for altitude
+        print("Waiting to reach altitude...")
+        async for position in self.drone.telemetry.position():
+            if position.relative_altitude_m > TAKEOFF_ALT - 0.5:
+                print(f"Reached {position.relative_altitude_m:.1f}m")
+                break
+
+        # Get current state and enter offboard
+        await self.update_position()
         await self.start_offboard()
 
     async def start_offboard(self):
-        # Send initial setpoint
-        await self.drone.offboard.set_velocity_body(
-            VelocityBodyYawspeed(0, 0, 0, 0)
+        # Set current position as initial setpoint
+        await self.drone.offboard.set_position_ned(
+            PositionNedYaw(self.north, self.east, self.down, self.yaw)
         )
 
         try:
             await self.drone.offboard.start()
             self.in_offboard = True
-            print("Offboard mode ACTIVE!")
+            print("Offboard mode ACTIVE - ready for commands!")
         except OffboardError as e:
             print(f"Offboard failed: {e}")
 
@@ -96,33 +120,43 @@ class DroneController:
         if self.in_offboard:
             try:
                 await self.drone.offboard.stop()
-            except:
+            except OffboardError:
                 pass
         await self.drone.action.land()
         self.in_offboard = False
-        print("Landed.")
+
+        print("Waiting for landing...")
+        async for in_air in self.drone.telemetry.in_air():
+            if not in_air:
+                print("Landed!")
+                break
+
+        await self.drone.action.disarm()
+        print("Disarmed.")
 
     async def move(self, forward=0, right=0, down=0, yaw=0):
-        """Move in a direction for MOVE_DURATION seconds."""
+        """Move a fixed distance relative to current heading."""
         if not self.in_offboard:
             print("Not in offboard mode! Press 't' to takeoff first.")
             return
 
-        await self.drone.offboard.set_velocity_body(
-            VelocityBodyYawspeed(forward, right, down, yaw)
-        )
-        await asyncio.sleep(MOVE_DURATION)
-        # Stop
-        await self.drone.offboard.set_velocity_body(
-            VelocityBodyYawspeed(0, 0, 0, 0)
+        await self.update_position()
+
+        # Apply yaw change
+        target_yaw = self.yaw + yaw
+
+        # Convert body-frame forward/right to NED using current heading
+        yaw_rad = math.radians(self.yaw)
+        target_north = self.north + forward * math.cos(yaw_rad) - right * math.sin(yaw_rad)
+        target_east = self.east + forward * math.sin(yaw_rad) + right * math.cos(yaw_rad)
+        target_down = self.down + down
+
+        await self.drone.offboard.set_position_ned(
+            PositionNedYaw(target_north, target_east, target_down, target_yaw)
         )
 
-    async def hover(self):
-        """Send zero velocity to maintain position."""
-        if self.in_offboard:
-            await self.drone.offboard.set_velocity_body(
-                VelocityBodyYawspeed(0, 0, 0, 0)
-            )
+        # Wait for drone to move
+        await asyncio.sleep(SETTLE_TIME)
 
 
 async def input_loop(controller):
@@ -145,42 +179,37 @@ async def input_loop(controller):
 
     while controller.running:
         try:
-            cmd = await asyncio.wait_for(queue.get(), timeout=0.3)
+            cmd = await asyncio.wait_for(queue.get(), timeout=2.0)
         except asyncio.TimeoutError:
-            await controller.hover()
             continue
 
         if not cmd:
             continue
 
-        # Process command
         if cmd == 'i':
-            print("Forward...")
-            await controller.move(forward=VELOCITY_XY)
+            print(f"Forward {MOVE_DISTANCE}m...")
+            await controller.move(forward=MOVE_DISTANCE)
         elif cmd == 'k':
-            print("Backward...")
-            await controller.move(forward=-VELOCITY_XY)
+            print(f"Backward {MOVE_DISTANCE}m...")
+            await controller.move(forward=-MOVE_DISTANCE)
         elif cmd == 'j':
-            print("Left...")
-            await controller.move(right=-VELOCITY_XY)
+            print(f"Left {MOVE_DISTANCE}m...")
+            await controller.move(right=-MOVE_DISTANCE)
         elif cmd == 'l':
-            print("Right...")
-            await controller.move(right=VELOCITY_XY)
+            print(f"Right {MOVE_DISTANCE}m...")
+            await controller.move(right=MOVE_DISTANCE)
         elif cmd == 'w':
-            print("Up...")
-            await controller.move(down=-VELOCITY_Z)
+            print(f"Up {ALTITUDE_STEP}m...")
+            await controller.move(down=-ALTITUDE_STEP)
         elif cmd == 's':
-            print("Down...")
-            await controller.move(down=VELOCITY_Z)
+            print(f"Down {ALTITUDE_STEP}m...")
+            await controller.move(down=ALTITUDE_STEP)
         elif cmd == 'a':
-            print("Yaw left...")
-            await controller.move(yaw=-YAWSPEED)
+            print(f"Yaw left {YAW_STEP}°...")
+            await controller.move(yaw=-YAW_STEP)
         elif cmd == 'd':
-            print("Yaw right...")
-            await controller.move(yaw=YAWSPEED)
-        elif cmd == 'x':
-            print("Stop.")
-            await controller.hover()
+            print(f"Yaw right {YAW_STEP}°...")
+            await controller.move(yaw=YAW_STEP)
         elif cmd == 't':
             await controller.takeoff()
         elif cmd == 'n':
@@ -195,13 +224,12 @@ async def input_loop(controller):
 
 
 def print_help():
-    print("""
+    print(f"""
 Commands (press key + Enter):
-  i/k  - Forward/Back
-  j/l  - Left/Right
-  w/s  - Up/Down
-  a/d  - Yaw left/right
-  x    - Stop/Hover
+  i/k  - Forward/Back ({MOVE_DISTANCE}m)
+  j/l  - Left/Right ({MOVE_DISTANCE}m)
+  w/s  - Up/Down ({ALTITUDE_STEP}m)
+  a/d  - Yaw left/right ({YAW_STEP}°)
   t    - Takeoff
   n    - Land
   q    - Quit
@@ -210,9 +238,9 @@ Commands (press key + Enter):
 
 
 async def main():
-    print("="*40)
+    print("=" * 40)
     print("DRONE KEYBOARD CONTROL")
-    print("="*40)
+    print("=" * 40)
     print_help()
 
     controller = DroneController()
