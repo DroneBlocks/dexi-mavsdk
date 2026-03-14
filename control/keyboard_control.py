@@ -126,22 +126,29 @@ class DroneController:
 
 
 async def input_loop(controller):
-    """Handle user input."""
+    """Handle user input using a dedicated reader thread."""
     loop = asyncio.get_event_loop()
+    queue = asyncio.Queue()
+
+    def reader():
+        """Blocking stdin reader running in a background thread."""
+        while controller.running:
+            try:
+                line = input("> ").strip().lower()
+                loop.call_soon_threadsafe(queue.put_nowait, line)
+            except EOFError:
+                loop.call_soon_threadsafe(queue.put_nowait, "q")
+                break
+
+    # Start single reader thread
+    loop.run_in_executor(None, reader)
 
     while controller.running:
-        # Read input in executor to not block
         try:
-            cmd = await asyncio.wait_for(
-                loop.run_in_executor(None, lambda: input("> ").strip().lower()),
-                timeout=0.5
-            )
+            cmd = await asyncio.wait_for(queue.get(), timeout=0.3)
         except asyncio.TimeoutError:
-            # Send hover command periodically
             await controller.hover()
             continue
-        except EOFError:
-            break
 
         if not cmd:
             continue
